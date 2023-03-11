@@ -1,0 +1,1382 @@
+---
+document_class: article
+title: "Práctica en R de Detección de Anomalías"
+subtitle: ""
+author: "Sergio Sáez Bombín [100007762@alumnos.uimp.es]"
+date: "12-03-2023"
+classoption: titlepage,twoside
+urlcolor: blue
+lang: ES
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \usepackage{titling}
+- \pretitle{\begin{center}\LARGE\includegraphics[width=12cm]{uimp_logo.png}\\[\bigskipamount]}
+- \posttitle{\end{center}}
+- \fancyhead[R]{\includegraphics[width=3cm]{uimp_logo.png}}
+- \fancyhead[L]{MUIIA - Métodos no supervisados y detección de anomalías}
+- \fancyfoot[CO,CE]{Práctica en R de Detección de Anomalías}
+- \fancyfoot[LE,RO]{\thepage}
+- \addtolength{\headheight}{1.0cm}
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+\newpage
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Dataset y Selección de Variables
+
+Para esta práctica se ha decidido optar por un dataset de los presentes en [ODDS](http://http://odds.cs.stonybrook.edu/)  conformado por variables características de los vinos, amplia e históricamente utilizado. Este dataset es **Wine**, del [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/datasets/Wine). El fichero RMarkdown relativo a este trabajo se encuentra en el siguiente enlace de [GitHub](https://github.com/sergiosaez6/outliers-analysis-r).
+
+En primer lugar, vamos a cargar el dataset elegido en R, con el objetivo de comenzar la exploración de este y la toma de decisiones en cuanto a su preparación para nuestro modelo de detección de outliers:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(ggplot2)   # Gráficos
+library(fitdistrplus)  # Ajuste de una distribución -> denscomp 
+library(reshape)   # melt
+library(ggbiplot)  # biplot
+library(tidyverse)   
+library(outliers)  # Grubbs
+library(MVN)       # mvn: Test de normalidad multivariante  
+library(CerioliOutlierDetection)  #MCD Hardin Rocke
+library(mvoutlier) # corr.plot 
+library(DDoutlier) # lof
+library(cluster)   # PAM
+
+
+# Máster -> Detección de anomalías
+# Juan Carlos Cubero. Universidad de Granada
+
+###########################################################################
+# Funciones utilizadas a lo largo del curso
+###########################################################################
+
+# rm(list=ls()) 
+
+
+###########################################################################
+# Realiza un plot de todos los registros
+# Permite cambiar el color con el que se visualiza un conjunto de registros. 
+# Dicho conjunto se especifica en el parámetro claves.a.mostrar 
+# y se muestran con el segundo color especificado. 
+# El primer color es el usado para los registros que NO están en claves.a.mostrar
+
+plot_2_colores = function (datos, 
+                           claves.a.mostrar, 
+                           titulo = "",
+                           colores = c("black", "red")){
+  
+  num.datos = nrow(as.matrix(datos))
+  seleccionados =  rep(FALSE, num.datos)
+  seleccionados[claves.a.mostrar] = TRUE
+  colores.a.mostrar = rep(colores[1], num.datos)
+  colores.a.mostrar [seleccionados] = colores[2]
+  
+  plot(datos, col=colores.a.mostrar, main = titulo)
+}
+
+
+
+###########################################################################
+# Función análoga a son_outliers_IQR, salvo que devuelve un vector
+# de claves en vez de un vector de bools
+
+claves_outliers_IQR = function(datos, ind.columna, coef = 1.5){
+  columna.datos = datos[,ind.columna]
+  son.outliers.IQR = son_outliers_IQR(datos, ind.columna, coef)
+  return (which(son.outliers.IQR  == TRUE))
+}
+
+
+
+###########################################################################
+# Calcula los outliers IQR con respecto a una columna 
+# Devuelve un vector de bools indicando si el registro i-ésimo 
+# de datos es o no un outlier IQR con respecto a la columna ind.columna
+# coef es 1.5 para los outliers normales y hay que pasarle 3 para los outliers extremos
+
+son_outliers_IQR = function (datos, ind.columna, coef = 1.5){
+  columna.datos = datos[,ind.columna]
+  cuartil.primero = quantile(columna.datos)[2]  
+  #quantile[1] es el mínimo y quantile[5] el máximo.
+  cuartil.tercero = quantile(columna.datos)[4] 
+  iqr = cuartil.tercero - cuartil.primero
+  extremo.superior.outlier = (iqr * coef) + cuartil.tercero
+  extremo.inferior.outlier = cuartil.primero - (iqr * coef)
+  son.outliers.IQR  = columna.datos > extremo.superior.outlier |
+    columna.datos < extremo.inferior.outlier
+  return (son.outliers.IQR)
+}
+
+
+###########################################################################
+# Calcula los outliers IQR con respecto a ALGUNA columna
+# Devuelve un vector de claves indicando si el registro i-ésimo 
+# de datos es o no un outlier IQR con respecto a ALGUNA columna
+# coef es 1.5 para los outliers normales y  3 para los outliers extremos
+
+claves_outliers_IQR_en_alguna_columna = function(datos, coef = 1.5){
+  df.clave.columnas = data.frame()
+  claves.outliers =  sapply(1:ncol(datos), 
+                               function(x) claves_outliers_IQR(datos, x, coef)
+  )
+  claves.outliers.en.alguna.columna = unlist(claves.outliers)
+  return (claves.outliers.en.alguna.columna)
+}
+
+
+
+
+#######################################################################
+# Devuelve los nombres de aquellas filas especificadas en el parámetro claves
+# filas es un vector de bools 
+
+nombres_filas = function (datos, claves) {
+  num.claves = length(claves)
+  nombres.filas = row.names(as.data.frame(datos))[claves]
+  
+  return (nombres.filas)
+}
+
+
+
+
+#######################################################################
+# función base para diag_caja_outliers_IQR y diag_caja
+
+diag_caja_grafico_base = function(datos, indice.columna){
+  # Importante: Para que aes busque los parámetros en el ámbito local, 
+  # debe incluirse  environment = environment()
+  nombre.columna = colnames(datos)[indice.columna]
+  ggboxplot = ggplot(data = as.data.frame(datos), 
+                     aes(x=factor(""), 
+                         y = datos[,indice.columna]) , 
+                     environment = environment()) + 
+              xlab(nombre.columna) + ylab("") 
+  return (ggboxplot)
+}
+
+#######################################################################
+# Muestra un diagrama de caja
+# Calcula los outliers IQR y los muestra como puntos en rojo en un BoxPlot
+
+diag_caja_outliers_IQR = function (datos, ind.columna, coef.IQR = 1.5){
+  # Si quisiéramos líneas horizontales en los límites de las cajas
+  # habría que añadir 
+  # + stat_boxplot(geom = 'errorbar')   
+  
+   outliers.IQR = son_outliers_IQR(datos, ind.columna, coef = coef.IQR)
+   ggboxplot =  diag_caja_grafico_base(datos, ind.columna) + 
+                stat_boxplot(coef = coef.IQR) +
+                geom_boxplot(coef = coef.IQR, outlier.colour = "red") 
+                # Importante: geom_boxplot debe ir después de stat_boxplot
+   
+   return (ggboxplot)
+}
+
+
+
+#######################################################################
+# Muestra un diagrama de caja
+# También muestra las etiquetas de los registros indicados en 
+# el parámetro claves.a.mostrar 
+
+diag_caja = function (datos, ind.columna, claves.a.mostrar = c()){
+  num.filas = nrow(datos)
+  num.claves = length(claves.a.mostrar)
+  nombres.filas = vector (mode = "character", length = num.filas)
+  nombres.filas = rep("", num.filas)
+  nombres.claves = nombres_filas(datos, claves.a.mostrar)
+  
+  for (i in 1:num.claves)
+    nombres.filas[claves.a.mostrar[i]]  = nombres.claves[i]
+  
+  ggboxplot = diag_caja_grafico_base(datos, ind.columna) + 
+    geom_boxplot(outlier.shape = NA) + # Para que no imprima los outliers IQR calculados dentro del mismo geom_boxplot
+    geom_text(aes(label = nombres.filas)) 
+  
+  return (ggboxplot)
+}
+
+
+
+
+
+#######################################################################
+# Muestra de forma conjunta todos los diagramas de caja de las variables de datos
+# Para ello, normaliza previamente los datos.
+# También muestra las etiquetas de los registros indicados en claves.a.mostrar
+# Requiere reshape
+
+diag_caja_juntos = function (datos, titulo = "", claves.a.mostrar = c()){  
+  # Importante: Para que aes busque los parámetros en el ámbito local, 
+  # debe incluirse  environment = environment()
+  
+  # Para hacerlo con ggplot, lamentablemente hay que construir antes una tabla 
+  # que contenga en cada fila el valor que a cada tupla le da cada variable 
+  # -> paquete reshape->melt
+  
+  # Por ejemplo, si tenemos el siguiente data frame
+  
+  # datos = data.frame(
+  #   A = c(1, 2),
+  #   B = c(3, 4)
+  # )
+  # datos =
+  #     A  B
+  #     1  3
+  #     2  4
+  
+  # melt(datos) construye esta tabla:
+  
+  #      variable value
+  # 1        A     1
+  # 2        A     2
+  # 3        B     3
+  # 4        B     4
+  
+  
+  nombres.de.filas = nombres_filas (datos, claves.a.mostrar)
+  
+  datos = scale(datos)
+  datos.melted = melt(datos)
+  colnames(datos.melted)[2]="Variables"
+  colnames(datos.melted)[3]="zscore"
+  factor.melted = colnames(datos.melted)[1]
+  columna.factor = as.factor(datos.melted[,factor.melted])
+  levels(columna.factor)[!levels(columna.factor) %in% nombres.de.filas] = ""  
+  
+  ggplot(data = datos.melted, 
+         aes(x=Variables, y=zscore), 
+         environment = environment()) + 
+    ggtitle(titulo) + 
+    geom_boxplot(outlier.shape = NA) + 
+    geom_text(aes(label = columna.factor), size = 3) 
+}
+
+
+
+
+
+
+#######################################################################
+# Muestra un biplot del conjunto de datos
+# Se muestran los nombres de los registros indicados en claves.a.mostrar
+# El color usado para dichos registros es el segundo del parámetro colores
+# El título para el grupo de dichos registros es el especificado en titulo.grupo.a.mostrar
+# El parámetro titulo especifica el título principal del gráfico
+
+biplot_2_colores = function (datos, 
+                             claves.a.mostrar = c(), 
+                             titulo = "",
+                             titulo.grupo.a.mostrar = "Outliers",
+                             colores = c("black","red")){
+  nombres = rownames(datos)
+  claves.datos = c(1:nrow(datos))
+  son.a.mostrar = claves.datos %in% claves.a.mostrar
+  nombres[!son.a.mostrar] = ''
+
+  PCA.model = princomp(scale(datos))
+  outlier.shapes = c(".","x") 
+  biplot = ggbiplot(PCA.model,
+                    obs.scale = 1,
+                    var.scale = 1 ,
+                    varname.size = 5,
+                    groups =  son.a.mostrar,
+                    alpha = 1/2) #alpha = 1/10
+  biplot = biplot + labs(color = titulo.grupo.a.mostrar)
+  biplot = biplot + scale_color_manual(values = colores)
+  biplot = biplot + geom_text(label = nombres,
+                              stat = "identity",
+                              size = 3,
+                              hjust=0,
+                              vjust=0)
+  biplot = biplot + ggtitle(titulo)
+}
+
+
+
+#######################################################################
+# Muestra un biplot de un conjunto de datos diferenciados por color
+# El color lo determina la asignación de cada dato a un cluster 
+# Las asignaciones de datos a cluster se indican en asignaciones.clustering
+# También se muestran los outliers cuyas claves vienen indicadas en claves.outliers
+ 
+biplot_outliers_clustering = function(datos, 
+                                      titulo = "Outliers por el método de Clustering", 
+                                      titulo.color = "Asignaciones Clustering",
+                                      titulo.outlier = "Outliers",
+                                      asignaciones.clustering,
+                                      claves.outliers){
+  son.outliers = rep(FALSE, nrow(datos))
+  son.outliers[claves.outliers] = TRUE
+  
+  bip = biplot_colores_formas(datos, 
+                              titulo, titulo.color, titulo.outlier,
+                              asignaciones.clustering,
+                              son.outliers,
+                              claves.outliers)
+  bip 
+}
+
+#######################################################################
+# Muestra un biplot del conjunto de datos
+# Los datos se muestran diferenciados por color y por forma
+# Las asignaciones de cada dato a su color y forma vienen dadas por los vectores
+# asignaciones.colores y asignaciones.formas 
+# También se muestran las etiquetas de los registros indicados
+# en el parámetro opcional claves.a.mostrar 
+
+biplot_colores_formas = function (datos, 
+                                  titulo, titulo.color = '', titulo.forma = '', 
+                                  asignaciones.colores, asignaciones.formas,
+                                  claves.a.mostrar = c()){
+  PCA.model = princomp(scale(datos))
+  
+  son.a.mostrar = rep(FALSE, nrow(datos))
+  son.a.mostrar[claves.a.mostrar] = TRUE
+  nombres.a.mostrar = rownames(datos)
+  nombres.a.mostrar[!son.a.mostrar] = ''
+
+  asignaciones.colores = factor(asignaciones.colores)
+  asignaciones.formas  = factor(asignaciones.formas)
+
+  
+  bip = ggbiplot(PCA.model, obs.scale = 1, var.scale=1 , varname.size = 3, alpha = 0) +              
+    geom_point(aes(shape = asignaciones.formas, colour = asignaciones.colores))  +
+    labs(shape = titulo.forma) +
+    labs(colour = titulo.color) +
+    ggtitle(titulo) +
+    geom_text(label = nombres.a.mostrar, stat = "identity", size = 3, hjust=0, vjust=0)      
+  
+  bip
+}
+
+#######################################################################
+# Calcula las distancias de cada dato al centroide de su cluster
+# Las asignaciones de cada dato a su cluster se indican en asignaciones.clustering
+# Cada centroide es una fila del data frame datos.centroides.normalizados
+
+distancias_a_centroides = function (datos.normalizados, 
+                                    asignaciones.clustering, 
+                                    datos.centroides.normalizados){
+  
+  sqrt(rowSums(   (datos.normalizados 
+                   - 
+                   datos.centroides.normalizados[asignaciones.clustering,])^2  ))
+}
+
+
+#######################################################################
+# Revierte la función de normalización (z-score)
+
+desnormaliza = function(datos, filas.normalizadas){
+  medias        = colMeans(datos)
+  desviaciones  = apply(datos, 2, sd , na.rm = TRUE)
+  
+  filas.desnormalizadas  = sweep(filas.normalizadas, 2, desviaciones, "*")
+  filas.desnormalizadas  = sweep(filas.desnormalizadas, 2, medias, "+")
+  
+  filas.desnormalizadas 
+}
+```
+
+```{r, message=FALSE, warning=FALSE}
+datos <- read.csv('./wine.data')
+names(datos) <- c('CLASS','ALC','ACMA','CEN','ALCEN','MAG','FET','FLA','FNF',
+                  'PRO','IC','MAT','OD','PROL')
+row.names(datos) <- as.character(c(1:nrow(datos)))
+head(datos)
+```
+
+Como se puede ver, el dataset está conformado por trece variables descriptoras (y una variable de clase, correspondiente a tres tipos de vinos) relativas a las **características físicas y químicas** del vino:
+
+- **Alcohol*****(ALC)***: El alcohol es el componente principal del vino y se refiere a la cantidad de etanol presente en la bebida. El alcohol del vino es producido a través de la fermentación del azúcar.
+
+- **Ácido málico*****(ACMA)***: El ácido málico es uno de los ácidos orgánicos presentes en el vino. Aporta acidez y un sabor refrescante a la bebida.
+
+- **Ceniza*****(CEN)***: La ceniza se refiere a la cantidad total de minerales presentes en el vino, como calcio, potasio, sodio, hierro, entre otros.
+
+- **Alcalinidad de la ceniza**: La alcalinidad de la ceniza es la medida de la capacidad de los minerales presentes en la ceniza para neutralizar ácidos.
+
+- **Magnesio*****(MAG)***: El magnesio es un mineral presente en el vino que contribuye a su sabor y aroma.
+
+- **Fenoles totales*****(FET)***: Los fenoles son compuestos orgánicos presentes en el vino que aportan sabor, aroma y color. La cantidad total de fenoles presentes en el vino es conocida como fenoles totales.
+
+- **Flavonoides*****(FLA)***: Los flavonoides son un tipo de fenol presente en el vino que aporta sabor, aroma y color.
+
+- **Fenoles no flavonoides*****(FNF)***: Los fenoles no flavonoides son otro tipo de fenol presente en el vino que también contribuye al sabor y aroma.
+
+- **Proantocianidinas*****(PRO)***: Las proantocianidinas son un tipo de flavonoide presente en el vino que aporta sabor y aroma.
+
+- **Intensidad del color*****(IC)***: La intensidad del color se refiere a la profundidad del color del vino.
+
+- **Matiz*****(MAT)***: El matiz se refiere al tono del color del vino.
+
+- **OD280/OD315 de vinos diluidos*****(OD)***: La relación OD280/OD315 se refiere a la absorbancia de la luz a una longitud de onda específica en el espectro del vino y se utiliza para medir la cantidad de proteína presente en la bebida.
+
+- **Prolina*****(PROL)***: La prolina es un aminoácido presente en el vino que contribuye al sabor y aroma de la bebida.
+
+
+Además, si ejecutamos un \texttt{str(...)} sobre el dataframe, podremos ver que tiene 177 observaciones y son numéricas:
+
+```{r, message=FALSE, warning=FALSE}
+str(datos)
+```
+
+Siguiendo la práctica, primero se comprueba que las variables sean numéricas. En el caso de este dataset, estrictamente hablando, inicialmente no se detectan como numéricas algunas de ellas, sino como enteros. Sin embargo, el tipo de dato numérico también contiene a los enteros, por lo tanto, al pasar estas columnas por la función \texttt{is.numeric(...)} se van a detectar como numéricas: 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+columnas.num = sapply(c(1:ncol(datos)) , function(x) is.numeric(datos[, x]))
+columnas.num
+
+datos.num = datos[, columnas.num]
+row.names(datos.num) <- as.character(c(1:nrow(datos.num)))
+```
+
+A continuación, se va a evaluar cada columna (variable) para determinar si contienen pocos valores distintos, además de la variable clase. Para calcular la varianza de cada columna se utiliza la función \texttt{var(...)}, y se va a considerar una varianza baja aquella que sea menor que el 10% (0.1): 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+datos.num = datos.num[,-1]
+columnas.var = sapply(c(1:ncol(datos.num)), function(x) var(datos[, x]))
+names(columnas.var) = colnames(datos.num)
+print("Varianza de cada columna (columnas.var):")
+columnas.var
+
+datos.num = datos.num[,columnas.var>0.1]
+print("Datos tras eliminar las columnas con poca varianza:")
+head(datos.num)
+```
+
+Vemos que se han eliminado, además de la variable clase, las variables *ALCEN*, *PRO* y *OD*. Por otro lado, en la propia descripción original del dataset se nos indica que no hay valores faltantes en ninguna de las observaciones, por lo que no sería necesario utilizar la función \texttt{na.omit(...)} (de todos modos la aplicamos para asegurarnos de que efectivamente no se utiliza ningún NA).
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+datos.num = na.omit(datos.num)
+```
+
+\newpage
+
+# 2. Detección de outliers en una dimensión
+
+## 2.1. Outliers IQR
+
+El primer apartado de outliers es el correspondiente al método IQR. Tal y como se indica en la práctica, este método solamente es aplicable con distribuciones normales (o semejantes), por lo que a continuación se muestran las distribuciones de todas las de nuestro dataset:
+
+```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='70%', fig.cap='Histogramas de cada una de las variables'}
+# COMPLETAR
+par(mfrow=c(2,3))
+histogramas <- sapply(c(1:ncol(datos.num)), 
+  function(x) hist(datos.num[, x], main="", xlab=names(datos.num)[x]))
+```
+\newpage
+
+Ahora, se van a definir las variables \texttt{columna}, \texttt{indice.columna} y \texttt{datos.columna} para localizar la columna (variable) con la que se realizarán las operaciones en la primera parte de la práctica.
+
+En este caso, se utilizará la variable *CEN*, que es una de las que presenta una distribución más cercana a la normal, si bien todas presentan distribuciones en las que se podría considerar que solo hay una moda presente y con una o dos colas de datos de poca frecuencia. En todo caso, cabría destacar la variable *FLA*, que presenta una distribución con dos cajas prominentes un tanto separadas, lo que podría indicar dos modas (se obvia este hecho y se continúa con el análisis, ya que la inspección de las distribuciones no es exhaustiva y esta no se ve como un caso claro de no normalidad). 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+indice.columna = 3
+columna = datos.num[,indice.columna]
+nombre.columna = names(datos.num) [indice.columna]
+```
+
+### 2.1.1. Obención de los outliers IQR
+
+A continuación, se dispone a calcular los outliers IQR, que se guardarán en las variables \texttt{son.outliers.IQR} y  \texttt{son.outliers.IQR.extremos}, tal y como se vio en el tutorial de la práctica: 
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+cuartil.primero = quantile(columna, 0.25)
+mediana = quantile(columna, 0.5)
+cuartil.tercero = quantile(columna, 0.75)
+iqr = IQR(columna)
+
+extremo.superior.outlier.IQR = cuartil.tercero + 1.5*iqr
+extremo.inferior.outlier.IQR = cuartil.primero - 1.5*iqr
+extremo.superior.outlier.IQR.extremo = cuartil.tercero + 3*iqr
+extremo.inferior.outlier.IQR.extremo = cuartil.primero - 3*iqr
+
+son.outliers.IQR = columna > extremo.superior.outlier.IQR | 
+                   columna < extremo.inferior.outlier.IQR
+son.outliers.IQR.extremos = columna > extremo.superior.outlier.IQR.extremo | 
+                            columna < extremo.inferior.outlier.IQR.extremo
+
+indice.columna
+nombre.columna
+cuartil.primero
+cuartil.tercero
+iqr
+extremo.superior.outlier.IQR 
+extremo.inferior.outlier.IQR
+extremo.superior.outlier.IQR.extremo
+extremo.inferior.outlier.IQR.extremo 
+head(son.outliers.IQR)
+sum(son.outliers.IQR)
+head(son.outliers.IQR.extremos)
+sum(son.outliers.IQR.extremos)
+```
+
+El resultado obtenido es que tenemos tres outliers (ninguno extremo) en la variable *CEN*, esto es, que se encuentra bien en el rango $x>q_3+1.5IQR$, o bien en el rango  $x>q_1-1.5IQR$.
+
+
+### 2.1.2. Índices y valores de los outliers IQR
+
+Ahora, es de interés encontrar estos outliers, es decir, obtener tanto su posición en la columna *CEN* como su valor. Para ello, se calculan las variables (tal y como se define en la práctica): \texttt{claves.outliers.IQR}, \texttt{df.outliers.IQR}, \texttt{nombres.outliers.IQR} y \texttt{valores.outliers.IQR} (de igual manera para los valores extremos):
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+claves.outliers.IQR = which(son.outliers.IQR, arr.ind=TRUE)
+df.outliers.IQR = datos.num[claves.outliers.IQR,]
+nombres.outliers.IQR = row.names(df.outliers.IQR)
+valores.outliers.IQR = df.outliers.IQR[,indice.columna]
+
+claves.outliers.IQR.extremos = which(son.outliers.IQR.extremos, arr.ind=TRUE)
+df.outliers.IQR.extremos = datos.num[claves.outliers.IQR.extremos,]
+nombres.outliers.IQR.extremos = row.names(df.outliers.IQR.extremos)
+valores.outliers.IQR.extremos = df.outliers.IQR.extremos[,indice.columna]
+
+claves.outliers.IQR
+df.outliers.IQR
+nombres.outliers.IQR
+valores.outliers.IQR
+claves.outliers.IQR.extremos
+df.outliers.IQR.extremos
+nombres.outliers.IQR.extremos
+valores.outliers.IQR.extremos
+```
+
+Como vemos, los tres outliers encontrados son los correspondientes a los vinos ***25***, ***59*** y ***121***, que se analizarán en las siguientes secciones.
+
+### 2.1.3. Cómputo de los outliers IQR con funciones
+
+Siguiendo la práctica, se obtienen estos mismos outliers pero haciendo uso de las funciones disponibles dadas en la práctica.
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+son.outliers.IQR     = son_outliers_IQR (datos.num, indice.columna)
+head(son.outliers.IQR)
+
+claves.outliers.IQR  = claves_outliers_IQR (datos.num, indice.columna)
+claves.outliers.IQR
+
+son.outliers.IQR.extremos    = son_outliers_IQR (datos.num, indice.columna, 3)
+head(son.outliers.IQR.extremos)
+
+claves.outliers.IQR.extremos = claves_outliers_IQR (datos.num, indice.columna, 3)
+claves.outliers.IQR.extremos
+
+```
+
+Como era de esperar, se obtienen los mismos tres outliers que antes.
+
+### 2.1.4. Desviación de los outliers con respecto a la media de la columna
+
+En este apartado se va a realizar el mismo estudio de outliers con el método IQR, pero esta vez sobre los datos normalizados (este análisis se realiza sobre la misma columna *CEN*):
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+datos.num.norm = as.data.frame(scale(datos.num))
+#datos.num.norm = scale(datos.num)
+head(datos.num.norm)
+columna.norm   = datos.num.norm[, indice.columna]
+```
+
+Calculando los valores de los outliers, se obtiene, como era de esperar, el mismo resultado que antes, solamente que ahora los valores están normalizados frente a una $N(0,1)$, por lo que se pueden identificar más fácilmente:
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+son.outliers.IQR.norm     = son_outliers_IQR (datos.num.norm, indice.columna)
+head(son.outliers.IQR.norm)
+
+claves.outliers.IQR.norm  = claves_outliers_IQR (datos.num.norm, indice.columna)
+claves.outliers.IQR.norm
+
+df.outliers.IQR.norm = datos.num.norm[claves.outliers.IQR.norm,]
+nombres.outliers.IQR.norm = row.names(df.outliers.IQR.norm)
+valores.outliers.IQR.norm = df.outliers.IQR.norm[,indice.columna]
+
+valores.outliers.IQR.norm
+
+```
+
+Finalmente, obtenemos todos los valores de todas las variables para cada uno de los outliers:
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+datos.num.norm.outliers.IQR = df.outliers.IQR.norm
+
+datos.num.norm.outliers.IQR
+
+```
+
+Tras normalizarlos, podemos ver que los tres registros van a representar un outlier en otras variables distintas a la de *CEN*. Por ejemplo, considerando que  -2.68 (+2.68) es el extremo que delimita un outlier IQR y -4.69 (+4.69) el del outlier extremo IQR, podemos decir que:
+
+- Los vinos de etiqueta ***25*** y ***59*** son ***outliers IQR (no extremos)*** solamente en la variable ***CEN***.
+- El vino de etiqueta ***121*** es un ***outlier IQR (no extremo)*** en las variables ***CEN*** y ***FLA***.
+
+### 2.1.5. Gráfico
+
+También es de interés mostrar visualmente la presencia de estos outliers (y los extremos) dentro del conjunto de datos de la propia variable *CEN*:
+
+Con los datos normalizados se ve fácilmente la disposición de los 3 outliers. Sin embargo, también se puede ver que estos no son considerados outliers extremos.
+
+```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='75%', fig.cap='Datos en la variable CEN con outliers IQR'}
+# COMPLETAR
+
+plot_2_colores(datos.num.norm[,3], claves.outliers.IQR, c('CEN'))
+```
+\newpage
+
+En rojo quedan marcados los tres outliers IQR calculados previamente. Con esta representación sí se ve a simple vista que, efectivamente son outliers, ya que se ve claramente que superan el límite de -2.68 (+2.68). Por otro lado, en el caso de outliers extremos:
+
+```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='75%', fig.cap='Datos en la variable CEN con outliers extremos IQR'}
+# COMPLETAR
+
+plot_2_colores(datos.num.norm[,3], claves.outliers.IQR.extremos, c('CEN'))
+```
+
+Efectivamente no hay puntos rojos porque no se ha localizado ningún outlier IQR extremo (no hay vlaores normalizados por encima/debajo de +4.69/-4.69).
+\newpage
+
+### 2.1.6. Diagramas de cajas
+
+Otro método de ver los outliers es a través de un diagrama de cajas. En la práctica ya se nos da una función para sacar estas cajas y ver de manera sencilla la presencia de los outliers:
+
+```{r, message=FALSE, warning=FALSE, fig.show='hold', out.width='50%', fig.cap='Boxplots de la variable CEN con datos originales y normalizados'}
+# COMPLETAR
+
+diag_caja_outliers_IQR(datos.num, indice.columna) + 
+  ggtitle("Boxplot con datos originales")
+diag_caja_outliers_IQR(datos.num.norm, indice.columna) + 
+  ggtitle("Boxplot con datos normalizados")
+```
+
+Si les añadimos las etiquetas:
+
+```{r, message=FALSE, warning=FALSE, fig.show='hold', out.width='50%', fig.cap='Boxplots de la variable CEN con datos originales y normalizados con etiquetas'}
+# COMPLETAR
+
+diag_caja(datos.num, indice.columna, claves.outliers.IQR) + 
+  ggtitle("Boxplot con datos originales con etiquetas")
+diag_caja(datos.num.norm, indice.columna, claves.outliers.IQR.norm) + 
+  ggtitle("Boxplot con datos normalizados con etiquetas")
+
+```
+
+Desafortunadamente, tenemos dos outliers demasiado juntos, y las etiquetas $121$ y $25$ se superponen (aunque se pueden intuir).
+
+Y ya para terminar con esta sección, se obtienen las cajas de estos registros que presentan outliers para todas las variables:
+```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='75%', fig.cap='Boxplots de todas las variables con datos normalizados y etiquetas'}
+# COMPLETAR
+
+diag_caja_juntos(datos.num.norm, "Outliers en alguna columna", claves.outliers.IQR.norm)
+```
+\newpage
+
+Este plot nos ayuda a confirmar lo que se indicaba anteriormente, que los vinos ***25*** y **59** solo son outliers IQR en la variable ***CEN***, mientras que el vino de etiqueta ***121*** lo es en las variables ***CEN*** y ***FLA***.
+
+## 2.2. Tests de hipótesis (OPCIONAL)
+
+En este apartado se busca poder determinar de manera estadística si los puntos más alejados de la media distribucional son outliers o no.
+
+### 2.2.1. Comprobación de la hipótesis de Normalidad
+
+En primer lugar se comprueba si los datos siguen una distribución normal. Esto, tal y como se indica en el enunciado de la práctica, se realiza de manera informal.
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='50%', fig.cap='Histograma de CEN y distrbución teórica'}
+ajusteNormal = fitdist(columna , "norm")
+denscomp (ajusteNormal,  xlab = nombre.columna)
+```
+\newpage
+
+A la vista de los resultados, se puede decir que la variable *CEN* sigue una distribución normal (o una no muy alejada de esta).
+
+### 2.2.2. Test de Grubbs
+
+A continuación, se aplica el test de Grubbs, para el cual se obtiene el siguiente valor de p-value:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+test.de.Grubbs = grubbs.test(columna, two.sided = TRUE)
+test.de.Grubbs$p.value
+```
+
+El valor obtenido es menor que 0.05, por lo tanto, podemos rechazar con seguridad desde un punto de vista estadístico, que uno los tres outliers (el más alejado de la media) de la variable *CEN* siga una distribución semejante al resto de los datos de dicha variable. Esto es, podemos asegurar que efectivamente es un outlier. A continuación, se muestra el valor que toma este outlier y su posición, donde se ve que este esl el vino con etiqueta ***59*** (como se puede ver también en la Figura 6, para la variable *CEN*). 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+valor.posible.outlier = outlier(columna)
+print("valor.posible.outlier")
+valor.posible.outlier
+```
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+es.posible.outlier = outlier(columna, logical = TRUE)
+clave.posible.outlier = which(es.posible.outlier == TRUE)
+print("clave.posible.outlier")
+clave.posible.outlier
+```
+
+
+### 2.2.3. Test de Normalidad
+
+Con este test se puede comprobar si la distribución subyacente de datos tras eliminar el oulie anterior sigue una distribución normal o no. Repetimos el análisis anterior para nuestros datos y posteriormente se aplicarán los tests de normalidad utilizados en el enunciado de la práctica.
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# COMPLETAR
+
+test.de.Grubbs = grubbs.test(columna, two.sided = TRUE)
+valor.posible.outlier = outlier(columna)
+es.posible.outlier = outlier(columna, logical = TRUE)
+clave.posible.outlier = which(es.posible.outlier == TRUE)
+
+test.de.Grubbs$p.value
+valor.posible.outlier
+es.posible.outlier
+clave.posible.outlier
+```
+
+Pasando los tests de normalidad de Shapiro-Wilks y Anderson-Darling, se obtiene lo siguiente:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+columna.sin.outlier = columna[-clave.posible.outlier]
+columna.sin.outlier
+
+shapiro.test(columna.sin.outlier)
+
+goodness_fit = gofstat(ajusteNormal)
+goodness_fit$adtest
+```
+
+Al igual que ocurre en el enunciado de la práctica, el test Anderson-Darling no se puede aplicar porque hay pocos datos, y el test Shapiro-Wilks da un resultado de $p-value > 0.05$, por lo que no se puede rechazar la hipótesis de que los datos subyacentes sigan una distribución que no sea normal.
+
+Por lo tanto, se puede asegurar, desde un punto de vista estadístico, que el vino ***59*** es efectivamente un outlier. A continuación, se presenta la función solicitada a desarrollar para implementar las operaciones recienmente realizadas:
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# COMPLETAR
+
+#######################################################################
+# Aplica el test de Grubbs sobre la columna ind.col de datos y devuelve una lista con:
+
+# nombre.columna: Nombre de la columna datos[, ind.col]
+# clave.mas.alejado.media: Clave del valor O que está más alejado de la media
+# valor.mas.alejado.media: Valor de O en datos[, ind.col]
+# nombre.mas.alejado.media: Nombre de O en datos
+# es.outlier: TRUE/FALSE dependiendo del resultado del test de Grubbs sobre O
+# p.value:  p-value calculado por el test de Grubbs
+# es.distrib.norm: Resultado de aplicar el test de Normalidad 
+#    de Shapiro-Wilks sobre datos[, ind.col]
+#    El test de normalidad se aplica sin tener en cuenta el 
+#    valor más alejado de la media (el posible outlier O)
+#    TRUE si el test no ha podido rechazar
+#       -> Sólo podemos concluir que los datos no contradicen una Normal
+#    FALSE si el test rechaza 
+#       -> Los datos no siguen una Normal
+
+# Requiere el paquete outliers
+
+test_Grubbs = function(data.frame, indice.columna, alpha = 0.05){
+  
+  columna = data.frame[,indice.columna]
+  nombre.columna = colnames(data.frame)[indice.columna]
+  
+  test.de.Grubbs = grubbs.test(columna, two.sided = TRUE)
+  p.value = test.de.Grubbs$p.value
+  
+  valor.mas.alejado.media = outlier(columna)
+  es.posible.outlier = outlier(columna, logical = TRUE)
+  clave.mas.alejado.media = which(es.posible.outlier == TRUE)
+  
+  nombre.mas.alejado.media = row.names(data.frame[clave.mas.alejado.media,])
+  
+  es.outlier <- ifelse(p.value<alpha,TRUE,FALSE)
+  
+  p.value.test.normalidad = shapiro.test(columna[-clave.mas.alejado.media])$p.value
+  
+  es.distrib.norm <- ifelse(p.value.test.normalidad>alpha,TRUE,FALSE)
+  
+  
+  list(nombre.columna=nombre.columna, 
+       clave.mas.alejado.media=clave.mas.alejado.media, 
+       valor.mas.alejado.media = valor.mas.alejado.media,
+       nombre.mas.alejado.media = nombre.mas.alejado.media,
+       es.outlier = es.outlier,
+       p.value = p.value,
+       p.value.test.normalidad = p.value.test.normalidad,
+       es.distrib.norm = es.distrib.norm
+  )
+}
+  
+```
+
+Comprobamos su funcionamiento con el caso analizado anteriormente:
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# COMPLETAR
+
+test.Grubbs.datos = test_Grubbs(datos.num, 3)
+
+test.Grubbs.datos
+  
+```
+
+Por otro lado, para comprobar los otros dos outliers, es necesario realizar el mismo test que antes, eliminando el que hemos comprobado que es efectivamente outlier. Por lo tanto, hay que quitar el outlier (vino *59*) y comprobar si el ***121*** es efectivamente outlier:
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# COMPLETAR
+
+test.Grubbs.datos = test_Grubbs(datos.num[-59,], 3)
+
+test.Grubbs.datos
+  
+```
+
+Como se puede ver, al tener un $p-value > 0.05$ en el Test de Grubbs, no se puede asegurar que este valor sea efectivamente un outlier desde el punto de vista estadístico. Esto provoca que, como consecuencia, el siguiente outlier detectado (***25***) no pueda tampoco ser considerado como tal desde un punto de vista estadístico. 
+
+\newpage
+
+## 2.3. Trabajando con varias columnas
+
+### 2.3.1. Outliers IQR
+
+En esta sección se expande el análisis a más de una columna (variable) para determinar los outliers IQR en todas ellas, es decir, en todo el conjunto de datos.
+
+Para ello, se hace uso de la función \texttt{claves outliers IQR en alguna columna(...)} siguiendo el código de la práctica:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+claves.outliers.IQR.en.alguna.columna =
+  claves_outliers_IQR_en_alguna_columna(datos.num, 1.5)
+
+print("Los registros que son outliers en alguna columna son:")
+claves.outliers.IQR.en.alguna.columna
+```
+
+Ahora, se obtienen muchos más registros (vinos) que son outliers IQR con respecto a alguna de las variables, hasta un total de 14. El detalle de estos outliers IQR es el siguiente:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+claves.outliers.IQR.en.mas.de.una.columna = 
+  unique(
+    claves.outliers.IQR.en.alguna.columna[
+      duplicated(claves.outliers.IQR.en.alguna.columna)])
+claves.outliers.IQR.en.alguna.columna = 
+  unique (claves.outliers.IQR.en.alguna.columna)
+
+print("claves.outliers.IQR.en.mas.de.una.columna")
+claves.outliers.IQR.en.mas.de.una.columna
+
+print("claves.outliers.IQR.en.alguna.columna")
+claves.outliers.IQR.en.alguna.columna 
+
+print("nombres_filas(datos.num, claves.outliers.IQR.en.mas.de.una.columna)")
+nombres_filas(datos.num, claves.outliers.IQR.en.mas.de.una.columna)
+
+print("nombres_filas(datos.num, claves.outliers.IQR.en.alguna.columna)")
+nombres_filas(datos.num, claves.outliers.IQR.en.alguna.columna)
+```
+
+En este caso, por la naturaleza del dataset, no se tiene un nombre propio para cada uno de los vinos observados, por lo que su etiqueta coincide con el nombre de estos.
+
+Por otro lado, el valor normalizado de todos estos ouliers IQR es el siguiente:
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+datos.num.norm[claves.outliers.IQR.en.alguna.columna, ]
+```
+
+Y representándolos de manera gráfica mediante cajas se pueden ver estos outliers. Para mayor comprensión de la imagen, se han añadido una serie de líneas indicando el umbral a partir del cual un valor normalizado se considera outlier (azul) y outlier extremo (rojo). 
+
+```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='75%', fig.cap='Boxlpots de todas las variables con datos normalizados'}
+# COMPLETAR
+
+diag_caja_juntos(datos.num.norm, "Outliers en alguna columna", 
+                 claves.outliers.IQR.en.alguna.columna) +
+  geom_hline(yintercept=2.68, linetype="dashed", color="blue") + 
+  geom_hline(yintercept=-2.68, linetype="dashed", color="blue") + 
+  geom_hline(yintercept=4.69, linetype="dashed", color="red") + 
+  geom_hline(yintercept=-4.69, linetype="dashed", color="red")
+```
+\newpage
+
+Se puede ver, tal y como se había calculado anteriormente, que no hay ningún outlier IQR extremo, pero sí se tienen varios outliers IQR no extremos. Por ejemplo, cabe destacar que el vino con etiqueta ***121*** es el único que es considerado outlier en más de una variable, en concreto ***CEN*** y ***FLA*** como se había analizado anteriormente. Esto nos indica que este vino  aporta significativamente un mayor número minerales (*CEN*) y que tendrá mayor sabor, aroma e intensidad de color (*FLA*) que el resto de vinos.
+
+En este último aspecto relativo a saber y aroma, probablemente esté en un nivel semejante a los vinos con etiquetas ***95*** y ***69***, ya que estos presentan valores muy elevados de magnesio (***MAG***), que también aporta sabor y aroma a los vinos.
+
+### 2.3.2. Tests de hipótesis (OPCIONAL)
+
+En esta ocasión, se va a aplicar el test de Grubbs sobre todas las variables. Para ello, como antes, vemos si todas ellas siguen una distribución normal:
+```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='70%', fig.cap='Histogramas de cada una de las variables junto a su teórica distribución'}
+# COMPLETAR
+
+par(mfrow=c(2,3))
+histogramas <- sapply(c(1:ncol(datos.num)), 
+  function(x) denscomp(fitdist(datos.num[, x] , "norm"), main="", xlab=names(datos.num)[x]))
+```
+
+\newpage
+
+Aquí vemos que, de manera informal, se podría considerar que solo la variable *CEN* (y quizás también las *MAT*) siguen una distribución normal (no se puede considerar que no lo sean). Por ello, a continuación se aplica el test de Grubbs para todos ellos:
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+sapply(c(1:ncol(datos.num)), 
+  function(x) test_Grubbs(datos.num, x))
+```
+
+En primer lugar, se ve que solamente la variable *CEN* podría seguir una distribución normal, ya que el test de Shapiro-Wilks rechaza la hipótesis de que la distribución sea normal para el resto de variables. Por otro lado, únicamente el outlier IQR dado en el vino ***59*** puede considerarse realmente un outlier desde el punto de vista estadístico.
+
+\newpage
+
+# 3. Outliers multivariantes
+
+## 3.1 Métodos estadísticos basados en la distancia de Mahalanobis (OPCIONAL)
+
+En esta sección se van a realizarutiliza tests estadísticos para asegurar que un outlier multivariante lo es desde un punto de vista estadístico.
+
+### 3.1.1 Hipótesis de Normalidad
+
+En primer lugar se analiza la hipótesis de normalidad basada en la distancia de Mahalanobis. Para ello, primero se utiliza la función realizada anteriormente para el test de Grubbs, con el objetivo de obtener las variables que siguen una distribución normal, ya que la primera premisa es que estas sigan una distribución 1-variante:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+es_normal = function (columna){
+  t_g = test_Grubbs(columna)
+  return (t_g$es.distrib.norm)
+}
+
+son.col.normales = sapply(c(1:ncol(datos.num)) , function(x) es_normal(datos.num[x]))
+datos.num.distrib.norm = datos.num[ , son.col.normales]
+
+print("son.col.normales")
+son.col.normales
+print("datos.num.distrib.norm")
+head(datos.num.distrib.norm)
+```
+
+Por lo tanto, no tiene sentido realizar el test de normalidad multivariante, ya que solamente disponemos de una única variable.
+
+### 3.1.2 Tests de hipótesis para detectar outliers
+
+Siguiendo el enunciado de la práctica, se va a realizar el test de hipótesis para detectar los outliers sobre las variables *FET* y *FLA* de nuestros datos (aunque ya sabemos que no siguen una distribución normal, lo que provoca que no podremos asegurar desde un punto de vista estadístico la detección de los outliers):
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='70%', fig.cap='Variables FET y FLA junto a las elipses de distancia de Mahalanobis (azul) y robusta (roja).'}
+corr.plot(datos.num[,5], datos.num[,6])
+```
+\newpage
+
+La gráfica nos indica que las dos variables están altamente correlacionadas, de hecho, la mayoría de los puntos han sido considerados en la estimación robusta de la matriz de covarianzas (elipse en rojo).
+
+Tras este análisis, el *test individual* y el *test de intersección* no van a poder ejecutarse ya que solamente tenemos una única variable que es normal. Sin embargo, a continuación se deja el código comentado:
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# COMPLETAR
+
+# set.seed(2)
+# 
+# alpha.individual = 0.05
+# test.individual = cerioli2010.fsrmcd.test(datos.num.distrib.norm,
+#                                           signif.alpha=alpha.individual)
+# son.outliers.test.individual = test.individual$outliers
+# claves.test.individual = which(son.outliers.test.individual  == TRUE)
+# nombres.test.individual = row.names(datos.num.distrib.norm[claves.test.individual,])
+# 
+# alpha.interseccion = 1 - (1-0.05)^(1/nrow(datos.num.distrib.norm))
+# test.interseccion = cerioli2010.fsrmcd.test(datos.num.distrib.norm,
+#                                             signif.alpha=alpha.interseccion)
+# son.outliers.test.interseccion = test.interseccion$outliers
+# claves.test.interseccion = which(son.outliers.test.interseccion  == TRUE)
+# nombres.test.interseccion = row.names(datos.num.distrib.norm[claves.test.interseccion,])
+# 
+# claves.test.individual
+# nombres.test.individual
+# claves.test.interseccion
+# nombres.test.interseccion
+```
+
+Por otro lado, si quisieramos mostrar las distancias de Mahalabonis ordenadas, por ejemplo, para el test individual, se tendría el siguiente código:
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+# COMPLETAR
+
+# dist.individual.ordenados = sort(test.individual$mahdist.rw, 
+#                                  decreasing=TRUE, 
+#                                  index.return = TRUE)
+# plot(dist.individual.ordenados$x)
+
+```
+
+\newpage
+
+## 3.2 Visualización de datos con un Biplot
+
+A continuación, se presenta, al igual que en el tutorial de la práctica, un \texttt{biplot(...)} con los datos, que nos va a permitir entender qué variables (características del vino) explican mejor  cada uno de estos:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Biplot de las dos primeras ocmponentes principales con los outliers IQR'}
+biplot.outliers.IQR = biplot_2_colores(datos.num.norm, 
+                                       claves.outliers.IQR.en.alguna.columna, 
+                                       titulo.grupo.a.mostrar = "Outliers IQR",
+                                       titulo ="Biplot Outliers IQR")
+biplot.outliers.IQR
+
+```
+\newpage
+
+En primer lugar, podemos ver que este \texttt{biplot(...)}, con las dos primeras componentes principales, no va a explicar de manera suficientemente precisa nuestros datos, ya que solamente abarca el 58.5% de la varianza (explicación) de estos.
+
+Por ejemplo, en el \texttt{biplot(...)} se puede ver que el vino de etiqueta ***121*** sí parece tomar una valor suficientemente elevado en la variable ***CEN*** como para considerarlo un outlier IQR. Sin embargo, este vino no parece, a simple vista, un outlier en la variable ***FLA***, cuando antes sí hemos comprobado que lo era con el método IQR. Esto nos indica, efectivamente, que la pérdida de información al utilizar solamente las dos primeras componentes principales es significativa, y se obtienen resultados diferentes a los obtenidos con todas las variables originales.
+
+## 3.3 Métodos basados en distancias: LOF
+
+En la siguiente sección se va a utilizar un método sin garantía estadística basado en distancias (euclídea en este caso) entre los distintos puntos de datos para obtener los outliers. Esto se realiza, tal y como se indica en la práctica, con la función \texttt{LOF} y considerando un valor de cinco vecinos.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+num.vecinos.lof = 5
+lof.scores = LOF(dataset = datos.num.norm, k = num.vecinos.lof)
+```
+
+Una vez calculados los *LOF scores*, los mostramos de manera ordenada:
+```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='75%', fig.cap='LOF socres ordenados'}
+# COMPLETAR
+
+lof.scores.ordenados=sort(lof.scores, decreasing=TRUE, index.return = TRUE)
+plot(lof.scores.ordenados$x)
+```
+En la anterior gráfica se ve que hay dos valores con un *score* significativamente mayor que el resto, por lo tanto, se utilizará $num.outliers=2$.
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+num.outliers = 2
+claves.lof.ordenados = lof.scores.ordenados$ix
+claves.outliers.lof = claves.lof.ordenados[1:num.outliers]
+nombres.outliers.lof = nombres_filas(datos.num.norm,claves.outliers.lof)
+
+claves.outliers.lof
+nombres.outliers.lof
+```
+
+Este resultado nos indica que tenemos dos outliers de tipo *LOF*, como son ***121*** (lo veíamos también con el método IQR) y ***71***. Los valores normalizados de estos son:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+datos.num.norm[claves.outliers.lof, ]
+```
+
+Seguramente, el caso de que el vino ***121*** haya obtenido un *score* alto sea por su valor alejado en las variables *CEN* y *FLA*. Sin embargo, más llamativo es el caso del vino ***71***, que no presenta aparentemente ningún valor alejado en ninguna de las variables.
+
+A continuación se va a representar la posición de cada uno de estos dos vinos en la representación de las variables confrontadas entre sí dos a dos:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Relación entre variables marcando la posición del vino 121'}
+clave.max.outlier.lof = claves.outliers.lof[1]
+
+colores = rep("black", times = nrow(datos.num.norm))
+colores[clave.max.outlier.lof] = "red"
+pairs(datos.num.norm, pch = 19,  cex = 0.5, col = colores, lower.panel = NULL,
+      main="Relación entre variables con máximo outlier LOF (vino 121)")
+```
+En esta representación, se puede ver que el vino con etiqueta ***121*** está considerablemente alejado de la nube de puntos en *CEN* y *FLA* contra cualquier otra variable (reforzando de nuevo la exlpicación de que es un outlier), pero también en otras relaciones como *ALC vs. MAG* o *ALVC vs. IC*.
+
+Además, también se representa esta relación, pero mostrando el segundo máximo *score LOF*, es decir, el vino ***71***, que aparentemente no presenta valores extremos en ninguna variable:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Relación entre variables marcando la posición del vino 71'}
+clave.segundo.max.outlier.lof = claves.outliers.lof[2]
+
+colores = rep("black", times = nrow(datos.num.norm))
+colores[clave.segundo.max.outlier.lof] = "red"
+pairs(datos.num.norm, pch = 19,  cex = 0.5, col = colores, lower.panel = NULL,
+      main="Relación entre variables con segundo máximo outlier LOF (vino 71)")
+```
+
+Revisando todas las gráficas, se puede ver que este punto se encuentra, generalmente, en el "borde" de la nube de puntos, lo que podría hacer que la distancia a sus cinco vecions más cercanos sea mayor que la del resto de puntos de la nube entre sí, lo que lo dejaría en una zona de baja densidad frente a una de alta. La variable en la que más se clarifica este hecho es *MAT*, donde se puede ver el valor de ***71*** generalmente en zonas de baja densidad con respecto a la gran nube de puntos.
+
+A continuación, representamos ambos valores con un \texttt{biplot(...)} considerando todas las variables (con las dos primeras componentes principales, que ya se ha comentado anteriormente que no suponen una representación fiable de los datos al no abarcar la suficiente varianza de los datos).
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Biplot de los datos normalizados con el outlier de mayor LOF socre'}
+biplot.max.outlier.lof = biplot_2_colores(datos.num.norm, clave.max.outlier.lof, titulo = "Mayor outlier LOF")
+biplot.max.outlier.lof
+```
+\newpage
+
+Al no representar fiablemente la relación de las variables y los datos, no da la impresión de que el vino ***121*** esté en una zona de baja densidad de datos junto a otra que parezca mucho mayor. Por otro lado, sí se ve que en el \texttt{biplot(...)} del vino ***71***, este se presenta en una zona de baja densidad otras dos zonas de puntos que parecen de mayor densidad (aunque también puede ser que contenga una cominación de dos variables algo inusual, lo que lo convierta en outlier):
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Biplot de los datos normalizados con el segundo outlier con mayor LOF score'}
+biplot.segundo.max.outlier.lof = biplot_2_colores(datos.num.norm, clave.segundo.max.outlier.lof, titulo = "Segundo mayor outlier LOF")
+biplot.segundo.max.outlier.lof
+```
+\newpage
+
+## 3.4 Métodos basados en Clustering
+
+### 3.4.1 Clustering usando k-means
+
+En este apartado se va a utilizar el algoritmo *k-means*, también basado en distancias, para clusterizar los datos y encontrar los outliers. Para ello, al igual que en la práctica, se utilizarán tres clusters (además, ya que sabemos que hay tres clases de vinos en nuestro dataset) y se considerarán cinco outliers.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+num.outliers = 5
+num.clusters = 3
+set.seed(2)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+modelo.kmeans = kmeans(datos.num.norm,num.clusters)
+asignaciones.clustering.kmeans=modelo.kmeans$cluster
+centroides.normalizados=modelo.kmeans$centers
+```
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+head(asignaciones.clustering.kmeans)
+centroides.normalizados
+```
+La versión desnormalizada de estos centroides sería la siguiente:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+centroides.desnormalizados = desnormaliza(datos.num, centroides.normalizados)
+centroides.desnormalizados
+```
+Para comprobar qué puntos son outliers, debemos calcular su distancia a estos centroides, en función de a qué cluster pertenece el punto:
+
+```{r, message=FALSE, warning=FALSE}
+#COMPLETAR
+
+#######################################################################
+# Calcula las distancias de los datos a los centroides
+# y se queda con los primeros (tantos como indica num.outliers)
+# Devuelve una lista con las claves de dichos registros y las
+# correspondientes distancias a sus centroides
+ 
+top_clustering_outliers = function(datos.norm, 
+                                   asignaciones.clustering, 
+                                   datos.centroides.norm, 
+                                   num.outliers){
+  
+  distancias.centroides = distancias_a_centroides (datos.norm, 
+                                                   asignaciones.clustering, 
+                                                   datos.centroides.norm)
+  
+  dist.centroides.ordenadas = sort(distancias.centroides, decreasing=T, index.return=TRUE)
+  
+  list(distancias = distancias.centroides[dist.centroides.ordenadas$ix[1:num.outliers]],
+       claves = dist.centroides.ordenadas$ix[1:num.outliers])
+}
+
+
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+top.outliers.kmeans = top_clustering_outliers(datos.num.norm , 
+                                              asignaciones.clustering.kmeans, 
+                                              centroides.normalizados, 
+                                              num.outliers)
+claves.outliers.kmeans = top.outliers.kmeans$claves 
+nombres.outliers.kmeans = nombres_filas(datos.num, claves.outliers.kmeans)
+distancias.outliers.centroides = top.outliers.kmeans$distancias
+
+print("claves.outliers.kmeans:")
+claves.outliers.kmeans
+
+print("nombres.outliers.kmeans:")
+nombres.outliers.kmeans
+
+print("distancias.outliers.centroides:")
+distancias.outliers.centroides
+```
+
+Como era de esperar (ya que así se ha definido previamente), obtenemos cinco outliers, aquellos puntos más alejados del centroide de su cluster. Si los representamos con un biplot, obtenemos lo siguiente:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Outliers obtenidos con el método k-means'}
+biplot_outliers_clustering(datos.num, 
+                           titulo = "Outliers k-means",
+                           asignaciones.clustering = asignaciones.clustering.kmeans,
+                           claves.outliers = claves.outliers.kmeans)
+```
+
+Si revisamos los outliers, encontramos que tres de ellos (vinos ***123***, ***96*** y ***69***) están en las zonas más exteriores de su cluster (el número 1). Por otro lado, el cluster 2 no cuenta con ningún outlier, mientras que el 3 tiene dos outliers (vinos ***121***, que ha sido considerado outlier en todos los métodos vistos en la práctica, y el ***95***). Estos dos últimos outliers no parecen tan exteriores a su cluster asociado, pero esto puede ser efecto, de nuevo, de que las dos primeras componentes principales no son suficentemente explicativas para todo el conjunto de datos y variables orginal.
+
+Para obtener más información, representamos sus *boxplots* siguiendo la práctica:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Boxplots de las variables con las etiquetas de los outliers k-means'}
+diag_caja_juntos(datos.num, "Outliers k-means", claves.outliers.kmeans)
+```
+
+Aquí se ve por ejemplo, que, además del ya conocido outlier ***121*** en las variables *CEN* y *FLA*, el vino ***95*** toma un valor muy diferente del resto para la variable *MAG*, por lo que este puede ser el motivo por el que, a pesar de no estar muy alejado de la nube de puntos de su cluster, sea considerado un outlier.
+
+### 3.4.2 Clustering usando medoides (OPCIONAL)
+
+Finalmente, el último método de clustering utilziada será el basado en medoides. Para ello, se utiliza el cñodigo del enunciado de la práctica , en el que se calculan los clusters y se muestra la información de los medoides:
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(2)
+matriz.distancias = dist(datos.num.norm)
+modelo.pam        = pam(matriz.distancias , k = num.clusters)
+```
+
+```{r, message=FALSE, warning=FALSE}
+asignaciones.clustering.pam = modelo.pam$clustering   
+nombres.medoides = modelo.pam$medoids    
+medoides = datos.num[nombres.medoides, ]
+medoides.normalizados = datos.num.norm[nombres.medoides, ]
+
+nombres.medoides
+medoides
+medoides.normalizados
+```
+
+A continuación, se calculan los top outliers, haciendo uso de las funciones disponibles, y mostramos sy \texttt{biplot(...)}:
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+
+# COMPLETAR
+
+top.outliers.pam = top_clustering_outliers(datos.num.norm , 
+                                              asignaciones.clustering.pam, 
+                                              medoides.normalizados, 
+                                              num.outliers)
+claves.outliers.pam = top.outliers.pam$claves 
+nombres.outliers.pam = nombres_filas(datos.num, claves.outliers.pam)
+distancias.outliers.medoides = top.outliers.pam$distancias
+
+claves.outliers.pam
+nombres.outliers.pam
+
+
+```
+\newpage
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Outliers obtenidos con el método PAM'}
+biplot_outliers_clustering(datos.num, 
+                           titulo = "Outliers PAM",
+                           asignaciones.clustering = asignaciones.clustering.pam,
+                           claves.outliers = claves.outliers.pam)
+```
+
+Estos resultados nos indican que los outliers obtenidos cuando se usa la partición creada por PAM, vienen dados, en su mayoría, por encontrarse en la periferia del cluster al que se han asociado. La única excepción sería el vino ***121***, que está en la zona central de su cluster, por lo que su característica de outlier vendrá dada porque tiene combinaciones inusuales de valores en distintas variables.  
+
+\newpage
+
+## 3.5 Análisis de los outliers multivariantes puros
+
+A continuación, se presentan aquellos outliers multivariantes puros, es decir, que son variantes con respecto a más de una variable a la vez. Para ello, seguimos las indicaciones de la práctica y se obtiene lo siguiente:
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+claves.outliers.lof.no.IQR=setdiff(claves.outliers.lof, claves.outliers.IQR.en.alguna.columna)
+nombres.outliers.lof.no.IQR=nombres_filas(datos.num.norm,claves.outliers.lof.no.IQR)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+print("claves.outliers.IQR.en.alguna.columna")
+claves.outliers.IQR.en.alguna.columna
+
+print("claves.outliers.lof")
+claves.outliers.lof
+
+print("claves.outliers.lof.no.IQR")
+claves.outliers.lof.no.IQR
+
+print("nombres.outliers.lof.no.IQR")
+nombres.outliers.lof.no.IQR
+```
+
+Tenemos que el único outlier multivariante puro es el vino ***71***. Esto puede darse, no porque tenga valores extremos (que ya se ha visto que no), sino porque se presentaba ciertamente aislado en la nube de puntos (con respecto al resto de distancias entre los valores), lo que nos indica que muestra una combinación inusual de valores en distintas variables.
+
+También es de interés considerar un número mayor de outliers, como se indica en la práctica. Teniendo en cuenta el resultado obtenido de *scores LOF* con el conjunto de datos *wine* en esta práctica, en lugar de utilizar 11 outliers, se van a utilizar 16, que se corresponde con el segundo nivel distinguido de *scores* obtenido con el método *LOF* visto previamente. Por lo tanto, si ampliamos la selección de outliers se obtiene lo siguiente:
+
+```{r, message=FALSE, warning=FALSE}
+# COMPLETAR
+
+claves.outliers.lof.no.IQR=setdiff(claves.lof.ordenados[1:16], claves.outliers.IQR.en.alguna.columna)
+nombres.outliers.lof.no.IQR=nombres_filas(datos.num.norm,claves.outliers.lof.no.IQR)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+print("claves.outliers.IQR.en.alguna.columna")
+claves.outliers.IQR.en.alguna.columna
+
+print("claves.outliers.lof")
+claves.outliers.lof
+
+print("claves.outliers.lof.no.IQR")
+claves.outliers.lof.no.IQR
+
+print("nombres.outliers.lof.no.IQR")
+nombres.outliers.lof.no.IQR
+```
+
+El número outliers multivariantes puros ha ascendido hasta siete, entre los que, obviamente, se incluye el vino ***71*** obtenido anteriormente. Si representamos estos outliers en un biplot, se obtiene:
+
+```{r, message=FALSE, warning=FALSE,fig.show='hold', fig.align='center', out.width='100%', fig.cap='Biplot con los outliers multivarantes puros'}
+#COMPLETAR
+
+biplot.outliers.lof = biplot_2_colores(datos.num.norm, 
+                                       claves.outliers.lof.no.IQR, 
+                                       titulo.grupo.a.mostrar = "Outliers puros",
+                                       titulo ="Biplot Outliers puros")
+biplot.outliers.lof
+```
+\newpage
+
+Se puede ver que los vinos ***46*** y ***13*** son muy semejantes, ya que se sitúan cercanos entre sí. Por otro lado, los vinos ***41*** y ***96*** quedan cerca del centro del \texttt{biplot}, indicando que tienen valores moderados en todas las variables, y entre ellos presentan valores opuestos en algunas de ellas, como *MAG*, lo que nos indica que serán notablemente diferentes en cuenta a aroma y sabor.
+
+Con respecto a los vinos ***112*** y ***110***, parecen semejantes en todas las variables, excepto en *ACMA* y *MAT*, en las que presentan valores opuestos. Es decir, el vino ***112*** será más ácido y refrescante que el ***110*** (*ACMA*), pero tendrá un color semejante (*IC*) aunque con un tono distinto (*MAT*).
+
+Por último, el vino ***71*** parece ser el más distinto al resto en todas las variables, ya que es el más aislado de todos ellos.
+
+Si vemos sus datos normalizados:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+datos.num.norm[claves.outliers.lof.no.IQR, ]
+```
+Se puede ver cómo el vino ***71*** presenta valores normalizados $[-1,1]$ (aproximadamente) para todas las variables, lo que lo hace único, y seguramente haga que este vino sea muy moderado en todos los sentidos (acidez, sabor, aromas, color, tono, etc.).
+
+\newpage
+
+# 4. Análisis de resultados
+
+## 4.1. Conjunto de datos
+
+La práctica se ha realizado con el dataset \texttt{wine} disponible en [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/datasets/Wine). Se ha suprimido la variable de clase \texttt{CLASSS}, así como \texttt{ALCEN}, \texttt{PRO} y \texttt{OD} (estas por tener una varianza menor al 10% en los datos). Por lo tanto, el análisis de outliers se ha realizado con las variables \texttt{ALC}, \texttt{ACMA}, \texttt{CEN}, \texttt{FET}, \texttt{FLA}, \texttt{FNF}, \texttt{IC}, \texttt{MAT} y \texttt{PROL}, y siguiendo la práctica, se ha aplicado la  normalización z-score cuando así ha sido requerida.
+
+## 4.2. Outliers en una variable
+
+### 4.2.1. Método IQR
+
+Se han encontrado tres outliers (no extremos) que son el vino ***25***, ***59*** y ***121***. Estos comparten valores elevados en la variable *CEN*, lo que indica que son ricos en minerales como el calcio, potasio, hierro, etc. Además, en el resto de variables presentan valores más normales, a excepción del vino ***121***, que es outlier también con respecto a la variable *FLA*, lo que lo hará un vino con mucho aroma y sabor, especialmente en comparación con el resto. 
+
+Otras características de este vino ***121*** es que está dentro del grupo de los vinos con más alcohol (*ALC*) y más fenoles (*FET*), que aporta también en aroma y sabor, a la par que su color y matiz serán semejantes a la media del resto de vinos (*IC* y *MAT*).
+
+### 4.2.2. Test de Hipótesis
+
+El test de Shapir-Wilks ha rechazado la Normalidad en todas las variables, a excepción de la variable *CEN*, en la que concluimos que sigue dicha distribución.
+
+Además, tras el análisis con ña variable *CEN*, se ha concluido que el único outlier IQR que también lo es desde un punto de vista estadístico, es el outlier ***59***.
+
+## 4.3. Outliers multivariantes
+
+### 4.3.1. Visualización con biplot
+
+Desafortunadamente, la varianza explicada del biplot obtenido no es sufuciente (del 80%) como para considerarla una buena aporximación. Por lo tanto, todas las conclusiones sacadas de esta representación deberían recibir un análisis adicional (quizás incluyendo otra componente principal al estudio) para que sean más fiables. 
+
+### 4.3.2. Métodos estadísticos usando la distancia de Mahalanobis
+
+La naturaleza de los datos, es decir, la no normalidad de todas sus variables a excepción de una, ha impedido este análisis de outliers multivariantes. Este hecho nos indica que no se puede asegurar que ninguno de los outliers multivariantes lo sea realmente desde un punto de vista estadístico.
+
+### 4.3.3. LOF
+
+Con este método hubo 2 vinos que destacaron sobre el resto como outliers: ***121*** y el ***71***. De estos dos, ya se vio en el método IQR que el vino ***121*** presentaba valores muy elevados para dos de las variables.
+
+Sin embargo, el vino ***71*** no presenta valores elevados en ninguna de las variables, siendo todos sus valores bastante moderados alrededor de la media de la distribución de todo el conjunto de datos. Revisando el \texttt{biplot}, se puede ver que este se sitúa en una zona con un baja densidad junto a otras dos zonas con densidades aparentemente mayores:
+
+- En una de ellas predominan vinos con alta gradación de alcohol, muchos fenoles y minerales, así como magnesio, lo que les aportarán aromas y sabores más fuertes).
+
+- En la otra nube de alta densidad cercana a este vino, se caracterizan por todo lo contrario, bajos en alcohol y magnesio por ejemplo, pero presentan una mayor variedad de matices en el color y de acidez (la primera nube de puntos tiene un tono de color elevado y una acidez baja).
+
+Por lo tanto, el vino ***71*** se coloca en medio de estas características. A excepción del tono del color e igual un elevado aroma, este vino presenta valores "medios" (moderados) en cuanto a minerales, magnesio, alcohol o prolina (que también contribuye al sabor), por lo que se coloca como un vino generalmente moderado. 
+
+Probablemente el hecho de que se considere un outlier multivariante (y por lo que se coloque en esa posición de baja densidad) es debido a la combinación de valores de algunas de sus variantes, ya que no se ven muchos valores (vinos) moderados en cuanto a la mayoría de las variables que tengan untono de color (*MAT*) y aromas (*FLA*) tan marcados y superiores a la media.
+
+De todos modos, y como se ha indicado, sería necesaria una mayor explicación por parte de las componentes principales para secundar estas afirmaciones con mayor seguridad.
+
+### 4.3.4. Métodos basados en clustering
+
+En el caso de utilizar el método de k-means, se determina si un valor es outlier en base a su distnacia euclídea con respecto al centroide del cluster al que se ha asignado. Para este método se han detectado cinco outliers (como se ha fijado), que son los vinos ***121***, ***95***, ****123***, ***96*** y ***69***. Al representarlos con un \texttt{boxplot}, se puede ver que el motico de que se hayan considerado outliers es por sus valores elevados en alguna de las variables. En concreto:
+
+- El vino de etiqueta ***121***, ya visto durante toda la práctica como outlier con varios métodos, presenta valores elevados en las variables *CEN* y *FLA*, lo que contribuye a que la suma del efecto de estas provoque que obtenga un *score* elevado para este método.
+
+- Y de igual manera, el resto de vinos detectados como outliers en este método presentan valores que, igual no son lo suficientemente elevados con respecto a la media como para considerarse un outlier en términos IQR, pero sí lo suficientemente elevados como para destacar entre algunas de las variables: los vinos ***95***, ***69*** y ***96*** destacan en la variable *MAG*, mientras que el ***123*** lo hace en la variable *ACMA*. Estos valores elevados en una de las variables, unido a valores inusuales en otras, provoca que el método k-means los detecte como outliers. De hecho, en los casos de los vinos ***123***, ***96*** y ***69*** es muy representativo el \texttt{biplot}, ya que están cercanos a la frontera de su cluster.
+
