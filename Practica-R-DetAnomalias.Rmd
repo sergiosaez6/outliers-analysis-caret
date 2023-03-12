@@ -471,6 +471,7 @@ El primer apartado de outliers es el correspondiente al método IQR. Tal y como 
 
 ```{r, message=FALSE, warning=FALSE, fig.show='hold', fig.align='center', out.width='70%', fig.cap='Histogramas de cada una de las variables'}
 # COMPLETAR
+
 par(mfrow=c(2,3))
 histogramas <- sapply(c(1:ncol(datos.num)), 
   function(x) hist(datos.num[, x], main="", xlab=names(datos.num)[x]))
@@ -581,7 +582,6 @@ En este apartado se va a realizar el mismo estudio de outliers con el método IQ
 
 ```{r, message=FALSE, warning=FALSE, echo=FALSE}
 datos.num.norm = as.data.frame(scale(datos.num))
-#datos.num.norm = scale(datos.num)
 head(datos.num.norm)
 columna.norm   = datos.num.norm[, indice.columna]
 ```
@@ -724,7 +724,7 @@ clave.posible.outlier
 
 Con este test se puede comprobar si la distribución subyacente de datos tras eliminar el oulie anterior sigue una distribución normal o no. Repetimos el análisis anterior para nuestros datos y posteriormente se aplicarán los tests de normalidad utilizados en el enunciado de la práctica.
 
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
 test.de.Grubbs = grubbs.test(columna, two.sided = TRUE)
@@ -752,7 +752,7 @@ goodness_fit$adtest
 Al igual que ocurre en el enunciado de la práctica, el test Anderson-Darling no se puede aplicar porque hay pocos datos, y el test Shapiro-Wilks da un resultado de $p-value > 0.05$, por lo que no se puede rechazar la hipótesis de que los datos subyacentes sigan una distribución que no sea normal.
 
 Por lo tanto, se puede asegurar, desde un punto de vista estadístico, que el vino ***59*** es efectivamente un outlier. A continuación, se presenta la función solicitada a desarrollar para implementar las operaciones recienmente realizadas:
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
 #######################################################################
@@ -810,7 +810,7 @@ test_Grubbs = function(data.frame, indice.columna, alpha = 0.05){
 ```
 
 Comprobamos su funcionamiento con el caso analizado anteriormente:
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
 test.Grubbs.datos = test_Grubbs(datos.num, 3)
@@ -820,7 +820,7 @@ test.Grubbs.datos
 ```
 
 Por otro lado, para comprobar los otros dos outliers, es necesario realizar el mismo test que antes, eliminando el que hemos comprobado que es efectivamente outlier. Por lo tanto, hay que quitar el outlier (vino *59*) y comprobar si el ***121*** es efectivamente outlier:
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
 test.Grubbs.datos = test_Grubbs(datos.num[-59,], 3)
@@ -948,7 +948,7 @@ print("datos.num.distrib.norm")
 head(datos.num.distrib.norm)
 ```
 
-Por lo tanto, no tiene sentido realizar el test de normalidad multivariante, ya que solamente disponemos de una única variable.
+Por lo tanto, no tiene sentido realizar el test de normalidad multivariante, ya que solamente disponemos de una única variable normal.
 
 ### 3.1.2 Tests de hipótesis para detectar outliers
 
@@ -959,10 +959,11 @@ corr.plot(datos.num[,5], datos.num[,6])
 ```
 \newpage
 
-La gráfica nos indica que las dos variables están altamente correlacionadas, de hecho, la mayoría de los puntos han sido considerados en la estimación robusta de la matriz de covarianzas (elipse en rojo).
+La gráfica nos indica que las dos variables están altamente correlacionadas, y la mayoría de los puntos han sido considerados en la estimación robusta de la matriz de covarianzas (elipse en rojo).
 
 Tras este análisis, el *test individual* y el *test de intersección* no van a poder ejecutarse ya que solamente tenemos una única variable que es normal. Sin embargo, a continuación se deja el código comentado:
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+
+```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
 # set.seed(2)
@@ -987,9 +988,9 @@ Tras este análisis, el *test individual* y el *test de intersección* no van a 
 # nombres.test.interseccion
 ```
 
-Por otro lado, si quisieramos mostrar las distancias de Mahalabonis ordenadas, por ejemplo, para el test individual, se tendría el siguiente código:
+Por otro lado, si quisieramos mostrar las distancias de Mahalanobis ordenadas, por ejemplo, para el test individual, se tendría el siguiente código:
 
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
 # dist.individual.ordenados = sort(test.individual$mahdist.rw, 
@@ -1067,6 +1068,8 @@ colores[clave.max.outlier.lof] = "red"
 pairs(datos.num.norm, pch = 19,  cex = 0.5, col = colores, lower.panel = NULL,
       main="Relación entre variables con máximo outlier LOF (vino 121)")
 ```
+\newpage
+
 En esta representación, se puede ver que el vino con etiqueta ***121*** está considerablemente alejado de la nube de puntos en *CEN* y *FLA* contra cualquier otra variable (reforzando de nuevo la exlpicación de que es un outlier), pero también en otras relaciones como *ALC vs. MAG* o *ALVC vs. IC*.
 
 Además, también se representa esta relación, pero mostrando el segundo máximo *score LOF*, es decir, el vino ***71***, que aparentemente no presenta valores extremos en ninguna variable:
@@ -1090,7 +1093,7 @@ biplot.max.outlier.lof
 ```
 \newpage
 
-Al no representar fiablemente la relación de las variables y los datos, no da la impresión de que el vino ***121*** esté en una zona de baja densidad de datos junto a otra que parezca mucho mayor. Por otro lado, sí se ve que en el \texttt{biplot(...)} del vino ***71***, este se presenta en una zona de baja densidad otras dos zonas de puntos que parecen de mayor densidad (aunque también puede ser que contenga una cominación de dos variables algo inusual, lo que lo convierta en outlier):
+Al no representar fiablemente la relación de las variables y los datos, no da la impresión de que el vino ***121*** esté en una zona de baja densidad de datos junto a otra que parezca mucho mayor. Por otro lado, sí se ve que en el \texttt{biplot(...)} del vino ***71***, este se presenta en una zona de baja densidad otras dos zonas de puntos que parecen de mayor densidad (aunque también puede ser que contenga una combinación de dos variables algo inusual, lo que lo convierta en outlier):
 
 ```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.show='hold', fig.align='center', out.width='100%', fig.cap='Biplot de los datos normalizados con el segundo outlier con mayor LOF score'}
 biplot.segundo.max.outlier.lof = biplot_2_colores(datos.num.norm, clave.segundo.max.outlier.lof, titulo = "Segundo mayor outlier LOF")
@@ -1186,6 +1189,7 @@ biplot_outliers_clustering(datos.num,
                            asignaciones.clustering = asignaciones.clustering.kmeans,
                            claves.outliers = claves.outliers.kmeans)
 ```
+\newpage
 
 Si revisamos los outliers, encontramos que tres de ellos (vinos ***123***, ***96*** y ***69***) están en las zonas más exteriores de su cluster (el número 1). Por otro lado, el cluster 2 no cuenta con ningún outlier, mientras que el 3 tiene dos outliers (vinos ***121***, que ha sido considerado outlier en todos los métodos vistos en la práctica, y el ***95***). Estos dos últimos outliers no parecen tan exteriores a su cluster asociado, pero esto puede ser efecto, de nuevo, de que las dos primeras componentes principales no son suficentemente explicativas para todo el conjunto de datos y variables orginal.
 
@@ -1201,25 +1205,28 @@ Aquí se ve por ejemplo, que, además del ya conocido outlier ***121*** en las v
 
 Finalmente, el último método de clustering utilziada será el basado en medoides. Para ello, se utiliza el cñodigo del enunciado de la práctica , en el que se calculan los clusters y se muestra la información de los medoides:
 
-```{r, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
 set.seed(2)
 matriz.distancias = dist(datos.num.norm)
 modelo.pam        = pam(matriz.distancias , k = num.clusters)
 ```
 
-```{r, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
 asignaciones.clustering.pam = modelo.pam$clustering   
 nombres.medoides = modelo.pam$medoids    
 medoides = datos.num[nombres.medoides, ]
 medoides.normalizados = datos.num.norm[nombres.medoides, ]
 
+print("nombres.medoides:")
 nombres.medoides
+print("medoides:")
 medoides
+print("medoides.mnormalizados:")
 medoides.normalizados
 ```
 
 A continuación, se calculan los top outliers, haciendo uso de las funciones disponibles, y mostramos sy \texttt{biplot(...)}:
-```{r, message=FALSE, warning=FALSE, echo=TRUE}
+```{r, message=FALSE, warning=FALSE}
 
 # COMPLETAR
 
@@ -1256,7 +1263,8 @@ A continuación, se presentan aquellos outliers multivariantes puros, es decir, 
 ```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
-claves.outliers.lof.no.IQR=setdiff(claves.outliers.lof, claves.outliers.IQR.en.alguna.columna)
+claves.outliers.lof.no.IQR=setdiff(claves.outliers.lof, 
+                                   claves.outliers.IQR.en.alguna.columna)
 nombres.outliers.lof.no.IQR=nombres_filas(datos.num.norm,claves.outliers.lof.no.IQR)
 ```
 
@@ -1281,7 +1289,8 @@ También es de interés considerar un número mayor de outliers, como se indica 
 ```{r, message=FALSE, warning=FALSE}
 # COMPLETAR
 
-claves.outliers.lof.no.IQR=setdiff(claves.lof.ordenados[1:16], claves.outliers.IQR.en.alguna.columna)
+claves.outliers.lof.no.IQR=setdiff(claves.lof.ordenados[1:16], 
+                                   claves.outliers.IQR.en.alguna.columna)
 nombres.outliers.lof.no.IQR=nombres_filas(datos.num.norm,claves.outliers.lof.no.IQR)
 ```
 
@@ -1298,6 +1307,7 @@ claves.outliers.lof.no.IQR
 print("nombres.outliers.lof.no.IQR")
 nombres.outliers.lof.no.IQR
 ```
+\newpage
 
 El número outliers multivariantes puros ha ascendido hasta siete, entre los que, obviamente, se incluye el vino ***71*** obtenido anteriormente. Si representamos estos outliers en un biplot, se obtiene:
 
@@ -1312,17 +1322,17 @@ biplot.outliers.lof
 ```
 \newpage
 
-Se puede ver que los vinos ***46*** y ***13*** son muy semejantes, ya que se sitúan cercanos entre sí. Por otro lado, los vinos ***41*** y ***96*** quedan cerca del centro del \texttt{biplot}, indicando que tienen valores moderados en todas las variables, y entre ellos presentan valores opuestos en algunas de ellas, como *MAG*, lo que nos indica que serán notablemente diferentes en cuenta a aroma y sabor.
+Este resultado nos indica que los vinos ***46*** y ***13*** son muy semejantes, ya que se sitúan cercanos entre sí. Por otro lado, los vinos ***41*** y ***96*** quedan cerca del centro del \texttt{biplot}, indicando que tienen valores moderados en todas las variables, y entre ellos presentan valores opuestos en algunas de ellas, como *MAG*, lo que nos indica que serán notablemente diferentes en cuenta a aroma y sabor.
 
 Con respecto a los vinos ***112*** y ***110***, parecen semejantes en todas las variables, excepto en *ACMA* y *MAT*, en las que presentan valores opuestos. Es decir, el vino ***112*** será más ácido y refrescante que el ***110*** (*ACMA*), pero tendrá un color semejante (*IC*) aunque con un tono distinto (*MAT*).
 
 Por último, el vino ***71*** parece ser el más distinto al resto en todas las variables, ya que es el más aislado de todos ellos.
 
-Si vemos sus datos normalizados:
+Si revisamos sus datos normalizados:
 ```{r, message=FALSE, warning=FALSE, echo=FALSE}
 datos.num.norm[claves.outliers.lof.no.IQR, ]
 ```
-Se puede ver cómo el vino ***71*** presenta valores normalizados $[-1,1]$ (aproximadamente) para todas las variables, lo que lo hace único, y seguramente haga que este vino sea muy moderado en todos los sentidos (acidez, sabor, aromas, color, tono, etc.).
+Se puede observar cómo el vino ***71*** presenta valores normalizados $[-1,1]$ (aproximadamente) para todas las variables, lo que lo hace único, y seguramente haga que este vino sea muy moderado en todos los sentidos (acidez, sabor, aromas, color, tono, etc.).
 
 \newpage
 
@@ -1374,7 +1384,7 @@ De todos modos, y como se ha indicado, sería necesaria una mayor explicación p
 
 ### 4.3.4. Métodos basados en clustering
 
-En el caso de utilizar el método de k-means, se determina si un valor es outlier en base a su distnacia euclídea con respecto al centroide del cluster al que se ha asignado. Para este método se han detectado cinco outliers (como se ha fijado), que son los vinos ***121***, ***95***, ****123***, ***96*** y ***69***. Al representarlos con un \texttt{boxplot}, se puede ver que el motico de que se hayan considerado outliers es por sus valores elevados en alguna de las variables. En concreto:
+En el caso de utilizar el método de k-means, se determina si un valor es outlier en base a su distnacia euclídea con respecto al centroide del cluster al que se ha asignado. Para este método se han detectado cinco outliers (como se ha fijado), que son los vinos ***121***, ***95*** ***123***, ***96*** y ***69***. Al representarlos con un \texttt{boxplot}, se puede ver que el motico de que se hayan considerado outliers es por sus valores elevados en alguna de las variables. En concreto:
 
 - El vino de etiqueta ***121***, ya visto durante toda la práctica como outlier con varios métodos, presenta valores elevados en las variables *CEN* y *FLA*, lo que contribuye a que la suma del efecto de estas provoque que obtenga un *score* elevado para este método.
 
